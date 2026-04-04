@@ -4,9 +4,14 @@ use sqlx::{Pool, Postgres};
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pool = Pool::<Postgres>::connect("postgres://postgres:@localhost:5432/postgres").await?;
     println!("Hello, world!");
-    sqlx::query("CREATE DATABASE users")
+    match sqlx::query("CREATE DATABASE users")
         .execute(&pool)
-        .await?;
+        .await
+    {
+        Ok(_) => println!("✓ 数据库 users 创建成功"),
+        Err(e) => {println!("go on")
+        }
+    }
 
     let app = Router::new()
         .route("/", get(root_handler));
