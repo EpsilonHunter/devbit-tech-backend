@@ -51,6 +51,7 @@ async fn create_user(
         .bind(&payload.password)
         .fetch_one(&*pool)
         .await;
+    println!("成功!");
     Json(CreateUserResponse {
         status_code: 200,
         name: payload.name.clone(),
