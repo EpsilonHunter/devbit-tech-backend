@@ -12,9 +12,9 @@ mod database;
 struct CreateUserRequest {
     name: String,
     email: String,
-    code: String,
+//    code: String,
     password: String,
-    _confirm_password: String,
+//    confirm_password: String,
 }
 #[derive(Serialize)]
 struct CreateUserResponse {
@@ -35,23 +35,22 @@ async fn create_user(
     pool: State<Pool<Postgres>>,
     payload: Json<CreateUserRequest>,
 ) -> Json<CreateUserResponse> {
-    let temp:String = sqlx::query("SELECT code FROM verify_code WHERE email = $1")
-        .bind(&payload.email).fetch_one(&*pool).await.unwrap().get(0);
-    if temp != payload.code{
-        return Json(CreateUserResponse {
-            status_code: 401,
-            name: payload.name.clone(),
-            email: payload.email.clone(),
-            id: 0,
-        })
-    }
+    // let temp:String = sqlx::query("SELECT code FROM verify_code WHERE email = $1")
+    //     .bind(&payload.email).fetch_one(&*pool).await.unwrap().get(0);
+    // if temp != payload.code || payload.confirm_password != payload.password{
+    //     return Json(CreateUserResponse {
+    //         status_code: 401,
+    //         name: payload.name.clone(),
+    //         email: payload.email.clone(),
+    //         id: 0,
+    //     })
+    // }
     let row = sqlx::query("INSERT INTO users (name, email,password) VALUES ($1, $2, $3) RETURNING id")
         .bind(&payload.name)
         .bind(&payload.email)
         .bind(&payload.password)
         .fetch_one(&*pool)
         .await;
-
     Json(CreateUserResponse {
         status_code: 200,
         name: payload.name.clone(),
@@ -87,7 +86,7 @@ async fn send_verification_code(pool:State<Pool<Postgres>>,email:String) {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pool = database::db_init().await?;
     let app = Router::new()
-        .route("/register", post(create_user))
+        .route("/", post(create_user))
         .route("/register/send_code",post(send_verification_code))
         .with_state(pool);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:7878").await?;
