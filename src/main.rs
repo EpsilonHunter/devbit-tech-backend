@@ -8,26 +8,27 @@ use rand;
 use resend_rs::types::{CreateEmailBaseOptions, Tag};
 use resend_rs::{Resend, Result};
 mod database;
+#[derive(Deserialize)]
 struct CreateUserRequest {
     name: String,
     email: String,
     code: String,
     password: String,
-    confirm_password: String,
+    _confirm_password: String,
 }
 #[derive(Serialize)]
 struct CreateUserResponse {
-    status_code: StatusCode,
+    status_code: u16,
     name: String,
     email: String,
     id:i32,
 }
 #[derive(Debug, Deserialize)]
-struct LoginRequest {
+struct _LoginRequest {
     email: String,
     password: String,
 }
-struct LoginResponse {
+struct _LoginResponse {
     status_code: StatusCode,
 }
 async fn create_user(
@@ -38,7 +39,7 @@ async fn create_user(
         .bind(&payload.email).fetch_one(&*pool).await.unwrap().get(0);
     if temp != payload.code{
         return Json(CreateUserResponse {
-            status_code: StatusCode::UNAUTHORIZED,
+            status_code: 401,
             name: payload.name.clone(),
             email: payload.email.clone(),
             id: 0,
@@ -52,13 +53,13 @@ async fn create_user(
         .await;
 
     Json(CreateUserResponse {
-        status_code: StatusCode::OK,
+        status_code: 200,
         name: payload.name.clone(),
         email: payload.email.clone(),
         id: row.unwrap().get(0),
     })
 }
-async fn login_check(pool: State<Pool<Postgres>>,payload:Json<LoginRequest>) -> Json<CreateUserResponse> {
+async fn _login_check(_pool: State<Pool<Postgres>>,_payload:Json<_LoginRequest>) -> Json<CreateUserResponse> {
     todo!()
 }
 async fn send_verification_code(pool:State<Pool<Postgres>>,email:String) {
@@ -72,7 +73,7 @@ async fn send_verification_code(pool:State<Pool<Postgres>>,email:String) {
     let text = format!("【devbit】验证码：{}，有效期5分钟，如非本人操作，请忽略。",code);
     let resend = Resend::default();
 
-    let from = "Acme <onboarding@a.dev>";
+    let from = "onboarding@resend.dev";
     let to = [email];
     let subject = "devbit";
 
