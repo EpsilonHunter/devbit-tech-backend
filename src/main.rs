@@ -1,55 +1,93 @@
 use axum::extract::State;
 use axum::routing::post;
 use axum::{Json, Router};
+use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 use sqlx::{Pool, Postgres, Row};
-#[derive(Debug, Deserialize)]
+use rand;
+use resend_rs::types::{CreateEmailBaseOptions, Tag};
+use resend_rs::{Resend, Result};
+mod database;
 struct CreateUserRequest {
     name: String,
     email: String,
+    code: String,
+    password: String,
+    confirm_password: String,
 }
-#[derive(Debug, Serialize)]
+#[derive(Serialize)]
 struct CreateUserResponse {
+    status_code: StatusCode,
     name: String,
     email: String,
-    id: i32,
+    id:i32,
+}
+#[derive(Debug, Deserialize)]
+struct LoginRequest {
+    email: String,
+    password: String,
+}
+struct LoginResponse {
+    status_code: StatusCode,
 }
 async fn create_user(
     pool: State<Pool<Postgres>>,
     payload: Json<CreateUserRequest>,
 ) -> Json<CreateUserResponse> {
-    let row = sqlx::query("INSERT INTO users (name, email) VALUES ($1, $2) RETURNING id")
+    let temp:String = sqlx::query("SELECT code FROM verify_code WHERE email = $1")
+        .bind(&payload.email).fetch_one(&*pool).await.unwrap().get(0);
+    if temp != payload.code{
+        return Json(CreateUserResponse {
+            status_code: StatusCode::UNAUTHORIZED,
+            name: payload.name.clone(),
+            email: payload.email.clone(),
+            id: 0,
+        })
+    }
+    let row = sqlx::query("INSERT INTO users (name, email,password) VALUES ($1, $2, $3) RETURNING id")
         .bind(&payload.name)
         .bind(&payload.email)
+        .bind(&payload.password)
         .fetch_one(&*pool)
         .await;
+
     Json(CreateUserResponse {
-        id: row.unwrap().get(0),
+        status_code: StatusCode::OK,
         name: payload.name.clone(),
         email: payload.email.clone(),
+        id: row.unwrap().get(0),
     })
+}
+async fn login_check(pool: State<Pool<Postgres>>,payload:Json<LoginRequest>) -> Json<CreateUserResponse> {
+    todo!()
+}
+async fn send_verification_code(pool:State<Pool<Postgres>>,email:String) {
+    let code = rand::random_range(100000..=999999);
+    sqlx::query("INSERT INTO verify_code (email, code) VALUES ($1, $2)")
+        .bind(&email)
+        .bind(&code)
+        .execute(&*pool)
+        .await
+        .unwrap();
+    let text = format!("【devbit】验证码：{}，有效期5分钟，如非本人操作，请忽略。",code);
+    let resend = Resend::default();
+
+    let from = "Acme <onboarding@a.dev>";
+    let to = [email];
+    let subject = "devbit";
+
+    let email = CreateEmailBaseOptions::new(from, to, subject)
+        .with_text(&text)
+        .with_tag(Tag::new("dev", "bit"));
+
+    let _id = resend.emails.send(email).await.unwrap();
 }
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let pool = Pool::<Postgres>::connect("postgres://postgres:@localhost:5432/postgres").await?;
-    println!("Hello, world!");
-    match sqlx::query("CREATE DATABASE users").execute(&pool).await {
-        Ok(_) => println!("数据库users 创建成功."),
-        Err(_) => {
-            println!("数据库users已存在.")
-        }
-    }
-    let pool = Pool::<Postgres>::connect("postgres://postgres:@localhost:5432/users").await?;
-    match sqlx::query("CREATE TABLE users (id SERIAL PRIMARY KEY, name TEXT NOT NULL, email TEXT NOT NULL UNIQUE)")
-        .execute(&pool)
-        .await
-    {
-        Ok(_) => println!("表users 创建成功."),
-        Err(_) => {println!("表users已存在.")
-        }
-    }
+    let pool = database::db_init().await?;
     let app = Router::new()
-        .route("/", post(create_user).get(|| async { "Hello, World!" }))
+        .route("/register", post(create_user))
+        .route("/register/send_code",post(send_verification_code))
         .with_state(pool);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:7878").await?;
     axum::serve(listener, app).await?;
