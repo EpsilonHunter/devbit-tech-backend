@@ -5,10 +5,11 @@ use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 use sqlx::{Pool, Postgres, Row};
 use rand;
-use resend_rs::types::{CreateEmailBaseOptions, Tag};
-use resend_rs::{Resend, Result};
 use chrono::{Utc,Duration};
 use jsonwebtoken::{encode, EncodingKey, Header};
+use lettre::message::{Mailbox, header::ContentType};
+use lettre::transport::smtp::authentication::Credentials;
+use lettre::{Message, SmtpTransport, Transport};
 mod database;
 #[derive(Serialize)]
 struct User {
@@ -59,7 +60,7 @@ async fn create_user(
         .bind(&payload.password)
         .fetch_one(&*pool)
         .await;
-    println!("成功!");
+    println!("插入成功!");
     Json(CreateUserResponse {
         name: payload.name.clone(),
         email: payload.email.clone(),
@@ -97,18 +98,26 @@ async fn send_verification_code(pool:State<Pool<Postgres>>,email:String) {
         .execute(&*pool)
         .await
         .unwrap();
-    let text = format!("【devbit】验证码：{}，有效期5分钟，如非本人操作，请忽略。",code);
-    let resend = Resend::default();
+    let email = Message::builder()
+        .from(Mailbox::new(Some("devbit".to_owned()), "2043399410@qq.com".parse().unwrap()))
+        .to(Mailbox::new(Some("client".to_owned()), email.parse().unwrap()))
+        .subject("devbit")
+        .header(ContentType::TEXT_PLAIN)
+        .body(String::from("[devbit]验证码:662705,有效期5分钟,如非本人操作，请忽略."))
+        .unwrap();
 
-    let from = "onboarding@resend.dev";
-    let to = [email];
-    let subject = "devbit";
+    let creds = Credentials::new("2043399410@qq.com".to_owned(), "raaukatcqjxydiaa".to_owned());
 
-    let email = CreateEmailBaseOptions::new(from, to, subject)
-        .with_text(&text)
-        .with_tag(Tag::new("dev", "bit"));
+    let mailer = SmtpTransport::relay("smtp.qq.com")
+        .unwrap()
+        .port(465)
+        .credentials(creds)
+        .build();
 
-    let _id = resend.emails.send(email).await.unwrap();
+    match mailer.send(&email) {
+        Ok(_) => println!("Email sent successfully!"),
+        Err(e) => panic!("Could not send email: {e:?}"),
+    }
 }
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
