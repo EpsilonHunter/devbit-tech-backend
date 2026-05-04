@@ -137,8 +137,7 @@ Content-Type: application/json
 
 **响应：**
 ```json
-// 204 No Content（成功）
-// 验证码将发送到邮箱
+
 ```
 
 ### 2. 用户注册

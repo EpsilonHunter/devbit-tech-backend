@@ -50,6 +50,19 @@ async fn create_user(
     pool: State<Pool<Postgres>>,
     payload: Json<CreateUserRequest>,
 ) -> Json<CreateUserResponse> {
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM users WHERE email = $1)"
+    )
+        .bind(&payload.email)
+        .fetch_one(&*pool)
+        .await.unwrap();
+    if exists {
+        return Json(CreateUserResponse {
+            name: payload.name.clone(),
+            email: payload.email.clone(),
+            id: 0,
+        })
+    }
     let temp:String = sqlx::query("SELECT code FROM verify_code WHERE email = $1")
         .bind(&payload.email).fetch_one(&*pool).await.unwrap().get(0);
     if temp != payload.code{
