@@ -273,9 +273,10 @@ async fn post_post(
 use jsonwebtoken::{decode, DecodingKey, Validation};
 
 fn decode_token(token: &str) -> Result<i32, StatusCode> {
+    let secret = std::env::var("JWT_SECRET").expect("JWT_SECRET must be set");
     let data = decode::<Claims>(
         token,
-        &DecodingKey::from_secret(b"devbit_pass_enjoy_your_wonderful_life_key_2026"),
+        &DecodingKey::from_secret(secret.as_bytes()),
         &Validation::default(),
     )
         .map_err(|_| StatusCode::UNAUTHORIZED)?;
