@@ -50,19 +50,7 @@ async fn create_user(
     pool: State<Pool<Postgres>>,
     payload: Json<CreateUserRequest>,
 ) -> Json<CreateUserResponse> {
-    let exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM users WHERE email = $1)"
-    )
-        .bind(&payload.email)
-        .fetch_one(&*pool)
-        .await.unwrap();
-    if exists {
-        return Json(CreateUserResponse {
-            name: payload.name.clone(),
-            email: payload.email.clone(),
-            id: 0,
-        })
-    }
+
     let temp:String = sqlx::query("SELECT code FROM verify_code WHERE email = $1")
         .bind(&payload.email).fetch_one(&*pool).await.unwrap().get(0);
     if temp != payload.code{
@@ -110,34 +98,46 @@ async fn login_check(pool: State<Pool<Postgres>>,payload:Json<LoginRequest>) -> 
     }
 }
 async fn send_verification_code(pool:State<Pool<Postgres>>,req:Json<SendCodeRequest>) {
-    println!("接收到前端json，开始发送验证码");
-    let code = rand::random_range(100000..=999999);
-    sqlx::query("INSERT INTO verify_code (email, code) VALUES ($1, $2)")
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM users WHERE email = $1)"
+    )
         .bind(&req.email)
-        .bind(&code)
-        .execute(&*pool)
-        .await
-        .unwrap();
-    let email = Message::builder()
-        .from(Mailbox::new(Some("devbit".to_owned()), "2043399410@qq.com".parse().unwrap()))
-        .to(Mailbox::new(Some("client".to_owned()), req.email.parse().unwrap()))
-        .subject("devbit")
-        .header(ContentType::TEXT_PLAIN)
-        .body(format!("[devbit]验证码:{},有效期5分钟,如非本人操作，请忽略.",code))
-        .unwrap();
+        .fetch_one(&*pool)
+        .await.unwrap();
+    if exists {
 
-    let creds = Credentials::new("2043399410@qq.com".to_owned(), "raaukatcqjxydiaa".to_owned());
-
-    let mailer = SmtpTransport::relay("smtp.qq.com")
-        .unwrap()
-        .port(465)
-        .credentials(creds)
-        .build();
-
-    match mailer.send(&email) {
-        Ok(_) => println!("Email sent successfully!"),
-        Err(e) => panic!("Could not send email: {e:?}"),
     }
+    else {
+        println!("接收到前端json，开始发送验证码");
+        let code = rand::random_range(100000..=999999);
+        sqlx::query("INSERT INTO verify_code (email, code) VALUES ($1, $2)")
+            .bind(&req.email)
+            .bind(&code)
+            .execute(&*pool)
+            .await
+            .unwrap();
+        let email = Message::builder()
+            .from(Mailbox::new(Some("devbit".to_owned()), "2043399410@qq.com".parse().unwrap()))
+            .to(Mailbox::new(Some("client".to_owned()), req.email.parse().unwrap()))
+            .subject("devbit")
+            .header(ContentType::TEXT_PLAIN)
+            .body(format!("[devbit]验证码:{},有效期5分钟,如非本人操作，请忽略.",code))
+            .unwrap();
+
+        let creds = Credentials::new("2043399410@qq.com".to_owned(), "raaukatcqjxydiaa".to_owned());
+
+        let mailer = SmtpTransport::relay("smtp.qq.com")
+            .unwrap()
+            .port(465)
+            .credentials(creds)
+            .build();
+
+        match mailer.send(&email) {
+            Ok(_) => println!("Email sent successfully!"),
+            Err(e) => panic!("Could not send email: {e:?}"),
+        }
+    }
+
 }
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
