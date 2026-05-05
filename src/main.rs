@@ -2,6 +2,8 @@ use axum::extract::State;
 use axum::routing::post;
 use axum::{Json, Router};
 use axum::http::StatusCode;
+use axum::http::HeaderMap;
+use axum::http::header::AUTHORIZATION;
 use serde::{Deserialize, Serialize};
 use sqlx::{Pool, Postgres, Row};
 use rand;
@@ -46,6 +48,80 @@ struct LoginResponse {
     token: String,
     user: User,
 }
+#[derive(Debug, sqlx::FromRow)]
+struct PostRow {
+    pub id: i32,
+    pub title: String,
+    pub content: String,
+    pub author_id: i32,
+    pub category: String,
+    pub tags: Vec<String>,
+    pub created_at: chrono::DateTime<Utc>,
+    pub updated_at: chrono::DateTime<Utc>,
+    pub view_count: i32,
+    pub comment_count: i32,
+    pub like_count: i32,
+    pub is_pinned: bool,
+    pub is_locked: bool,
+}
+#[derive(Debug, Deserialize)]
+struct CreatePostPayload {
+title: String,
+content: String,
+category: ForumCategory,
+tags: Vec<String>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, sqlx::Type)]
+#[serde(rename_all = "lowercase")]
+#[sqlx(type_name = "TEXT")]
+pub enum ForumCategory {
+    General,
+    Tech,
+    Devbit,
+    Help,
+    Showcase,
+    Announcement,
+}
+use std::fmt;
+
+impl fmt::Display for ForumCategory {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ForumCategory::General => write!(f, "general"),
+            ForumCategory::Tech => write!(f, "tech"),
+            ForumCategory::Devbit => write!(f, "devbit"),
+            ForumCategory::Help => write!(f, "help"),
+            ForumCategory::Showcase => write!(f, "showcase"),
+            ForumCategory::Announcement => write!(f, "announcement"),
+        }
+    }
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForumPost {
+    pub id: i32,
+    pub title: String,
+    pub content: String,
+    pub author: ForumUser,
+    pub category: ForumCategory,
+    pub tags: Vec<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub view_count: i32,
+    pub comment_count: i32,
+    pub like_count: i32,
+    pub liked_by_me: bool,
+    pub is_pinned: bool,
+    pub is_locked: bool,
+}
+#[derive(Debug, Clone, Serialize, Deserialize,sqlx::FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct ForumUser {
+    pub id: i32,
+    pub name: String,
+    pub avatar: String,
+    pub is_admin: bool,
+}
 async fn create_user(
     pool: State<Pool<Postgres>>,
     payload: Json<CreateUserRequest>,
@@ -61,7 +137,7 @@ async fn create_user(
         })
     }
     println!("接收到前端json，开始将用户数据插入数据库");
-    let row = sqlx::query("INSERT INTO users (name, email,password) VALUES ($1, $2, $3) RETURNING id")
+    let row = sqlx::query("INSERT INTO users (name, email,password,avatar,is_admin) VALUES ($1, $2, $3,$4,$5) RETURNING id")
         .bind(&payload.name)
         .bind(&payload.email)
         .bind(&payload.password)
@@ -137,8 +213,77 @@ async fn send_verification_code(pool:State<Pool<Postgres>>,req:Json<SendCodeRequ
             Err(e) => panic!("Could not send email: {e:?}"),
         }
     }
-
 }
+async fn post_post(
+    pool: State<Pool<Postgres>>,
+    headers: HeaderMap,
+    payload: Json<CreatePostPayload>,
+) -> Result<Json<ForumPost>, StatusCode> {
+    let token = headers
+        .get(AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+
+    let user_id = decode_token(token)?;
+
+    // 插入并返回记录（不用 !）
+    let row: PostRow = sqlx::query_as::<_, PostRow>(
+        "INSERT INTO posts (title, content, author_id, category, tags)
+         VALUES ($1, $2, $3, $4, $5)
+         RETURNING id, title, content, author_id, category, tags,
+                   created_at, updated_at, view_count, comment_count,
+                   like_count, is_pinned, is_locked",
+    )
+        .bind(&payload.title)
+        .bind(&payload.content)
+        .bind(user_id)
+        .bind(&payload.category.to_string())
+        .bind(&payload.tags)
+        .fetch_one(&*pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    // 查作者（不用 !）
+    let author: ForumUser = sqlx::query_as::<_, ForumUser>(
+        "SELECT id, name, avatar, is_admin FROM users WHERE id = $1",
+    )
+        .bind(user_id)
+        .fetch_one(&*pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(Json(ForumPost {
+        id: row.id,
+        title: row.title,
+        content: row.content,
+        author,
+        category: payload.category.clone(),   // 直接用请求体里的枚举
+        tags: row.tags,
+        created_at: row.created_at.to_rfc3339(),
+        updated_at: row.updated_at.to_rfc3339(),
+        view_count: row.view_count,
+        comment_count: row.comment_count,
+        like_count: row.like_count,
+        liked_by_me: false,
+        is_pinned: row.is_pinned,
+        is_locked: row.is_locked,
+    }))
+}
+use jsonwebtoken::{decode, DecodingKey, Validation};
+
+fn decode_token(token: &str) -> Result<i32, StatusCode> {
+    let data = decode::<Claims>(
+        token,
+        &DecodingKey::from_secret(b"devbit_pass_enjoy_your_wonderful_life_key_2026"),
+        &Validation::default(),
+    )
+        .map_err(|_| StatusCode::UNAUTHORIZED)?;
+
+    Ok(data.claims.sub)  // user_id
+}
+
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenv().ok();
@@ -147,6 +292,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/register", post(create_user))
         .route("/register/send_code",post(send_verification_code))
         .route("/login",post(login_check))
+        .route("/forum/posts",post(post_post))
         .with_state(pool);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:7878").await?;
     axum::serve(listener, app).await?;

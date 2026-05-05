@@ -31,5 +31,43 @@ pub async fn db_init() -> Result<Pool<Postgres>, sqlx::Error> {
         Ok(_) => println!("表verify_code创建成功."),
         Err(_) => println!("表verify_code已存在."),
     }
+    match sqlx::query("ALTER TABLE users ADD COLUMN avatar VARCHAR(255) NOT NULL DEFAULT ''")
+        .execute(&pool)
+        .await
+    {
+        Ok(_) => println!("avatar列添加成功."),
+        Err(_) => println!("avatar列已存在."),
+    }
+
+    match sqlx::query("ALTER TABLE users ADD COLUMN is_admin BOOLEAN NOT NULL DEFAULT FALSE")
+        .execute(&pool)
+        .await
+    {
+        Ok(_) => println!("is_admin列添加成功."),
+        Err(_) => println!("is_admin列已存在."),
+    }
+    match sqlx::query(
+        "CREATE TABLE posts (
+        id SERIAL PRIMARY KEY,
+        title TEXT NOT NULL,
+        content TEXT NOT NULL,
+        author_id INT NOT NULL REFERENCES users(id),
+        category TEXT NOT NULL,
+        tags TEXT[] NOT NULL DEFAULT '{}',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        view_count INT NOT NULL DEFAULT 0,
+        comment_count INT NOT NULL DEFAULT 0,
+        like_count INT NOT NULL DEFAULT 0,
+        is_pinned BOOLEAN NOT NULL DEFAULT FALSE,
+        is_locked BOOLEAN NOT NULL DEFAULT FALSE
+    )"
+    )
+        .execute(&pool)
+        .await
+    {
+        Ok(_) => println!("posts表格添加成功."),
+        Err(_) => println!("posts表格已存在."),
+    }
     Ok(pool)
 }
