@@ -14,6 +14,7 @@ use lettre::transport::smtp::authentication::Credentials;
 use lettre::{Message, SmtpTransport, Transport};
 use std::env;
 use dotenv::dotenv;
+use axum::extract::Path;
 mod database;
 #[derive(Serialize)]
 struct User {
@@ -93,6 +94,20 @@ impl fmt::Display for ForumCategory {
             ForumCategory::Help => write!(f, "help"),
             ForumCategory::Showcase => write!(f, "showcase"),
             ForumCategory::Announcement => write!(f, "announcement"),
+        }
+    }
+}
+impl std::str::FromStr for ForumCategory {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "general" => Ok(ForumCategory::General),
+            "tech" => Ok(ForumCategory::Tech),
+            "devbit" => Ok(ForumCategory::Devbit),
+            "help" => Ok(ForumCategory::Help),
+            "showcase" => Ok(ForumCategory::Showcase),
+            "announcement" => Ok(ForumCategory::Announcement),
+            _ => Err(format!("Invalid category: {}", s)),
         }
     }
 }
@@ -283,7 +298,52 @@ fn decode_token(token: &str) -> Result<i32, StatusCode> {
 
     Ok(data.claims.sub)  // user_id
 }
+async fn get_post(
+    pool: State<Pool<Postgres>>,
+    id: Path<i32>,
+) -> Result<Json<ForumPost>, StatusCode> {
+    let row: PostRow = sqlx::query_as::<_, PostRow>(
+        "SELECT id, title, content, author_id, category, tags,
+                created_at, updated_at, view_count, comment_count,
+                like_count, is_pinned, is_locked
+         FROM posts WHERE id = $1"
+    )
+        .bind(*id)
+        .fetch_one(&*pool)
+        .await
+        .map_err(|_| StatusCode::NOT_FOUND)?;
 
+    // 浏览量 +1
+    let _ = sqlx::query("UPDATE posts SET view_count = view_count + 1 WHERE id = $1")
+        .bind(*id)
+        .execute(&*pool)
+        .await;
+
+    let author: ForumUser = sqlx::query_as::<_, ForumUser>(
+        "SELECT id, name, avatar, is_admin FROM users WHERE id = $1"
+    )
+        .bind(row.author_id)
+        .fetch_one(&*pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(Json(ForumPost {
+        id: row.id,
+        title: row.title,
+        content: row.content,
+        author,
+        category: row.category.parse().unwrap_or(ForumCategory::General),
+        tags: row.tags,
+        created_at: row.created_at.to_rfc3339(),
+        updated_at: row.updated_at.to_rfc3339(),
+        view_count: row.view_count + 1,
+        comment_count: row.comment_count,
+        like_count: row.like_count,
+        liked_by_me: false,
+        is_pinned: row.is_pinned,
+        is_locked: row.is_locked,
+    }))
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -293,7 +353,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/register", post(create_user))
         .route("/register/send_code",post(send_verification_code))
         .route("/login",post(login_check))
-        .route("/forum/posts",post(post_post))
+        .route("/forum/posts",post(post_post).get(get_post))
         .with_state(pool);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:7878").await?;
     axum::serve(listener, app).await?;
