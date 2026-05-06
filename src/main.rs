@@ -1,5 +1,5 @@
 use axum::extract::State;
-use axum::routing::post;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use axum::http::StatusCode;
 use axum::http::HeaderMap;
@@ -136,6 +136,69 @@ pub struct ForumUser {
     pub name: String,
     pub avatar: String,
     pub is_admin: bool,
+}
+#[derive(Serialize)]
+struct BootstrapResponse {
+    users: Vec<ForumUser>,
+    posts: Vec<ForumPost>,
+    messages: Vec<()>,   // 暂时返回空数组
+}
+async fn bootstrap(
+    pool: State<Pool<Postgres>>,
+) -> Result<Json<BootstrapResponse>, StatusCode> {
+    // 查询所有用户
+    let users: Vec<ForumUser> = sqlx::query_as::<_, ForumUser>(
+        "SELECT id, name, avatar, is_admin FROM users"
+    )
+        .fetch_all(&*pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    // 查询所有帖子
+    let post_rows: Vec<PostRow> = sqlx::query_as::<_, PostRow>(
+        "SELECT id, title, content, author_id, category, tags,
+                created_at, updated_at, view_count, comment_count,
+                like_count, is_pinned, is_locked
+         FROM posts
+         ORDER BY created_at DESC"
+    )
+        .fetch_all(&*pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let mut posts = Vec::new();
+    for row in post_rows {
+        let author: ForumUser = sqlx::query_as::<_, ForumUser>(
+            "SELECT id, name, avatar, is_admin FROM users WHERE id = $1"
+        )
+            .bind(row.author_id)
+            .fetch_one(&*pool)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        posts.push(ForumPost {
+            id: row.id,
+            title: row.title,
+            content: row.content,
+            author,
+            category: row.category.parse().unwrap_or(ForumCategory::General),
+            tags: row.tags,
+            created_at: row.created_at.to_rfc3339(),
+            updated_at: row.updated_at.to_rfc3339(),
+            view_count: row.view_count,
+            comment_count: row.comment_count,
+            like_count: row.like_count,
+            liked_by_me: false,
+            is_pinned: row.is_pinned,
+            is_locked: row.is_locked,
+        });
+    }
+
+    Ok(Json(BootstrapResponse {
+        users,
+        posts,
+        messages: vec![],
+    }))
 }
 async fn create_user(
     pool: State<Pool<Postgres>>,
@@ -353,7 +416,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/register", post(create_user))
         .route("/register/send_code",post(send_verification_code))
         .route("/login",post(login_check))
+        .route("/forum/bootstrap",get(bootstrap))
         .route("/forum/posts",post(post_post).get(get_post))
+
         .with_state(pool);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:7878").await?;
     axum::serve(listener, app).await?;
