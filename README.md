@@ -1,360 +1,236 @@
-```markdown
-# 🔐 DevBit 认证服务
+DevBit Forum API
+一个基于 Rust 的高性能社区论坛后端服务，采用 Axum 框架构建，提供 RESTful API 接口。
 
-<div align="center">
+项目简介
+DevBit Forum API 是一个轻量级、高性能的论坛系统后端，支持用户认证、帖子管理、邮件验证码等核心功能。项目采用现代化的 Rust 技术栈，具有出色的并发处理能力和安全性保障。
 
-![Rust](https://img.shields.io/badge/Rust-1.70+-orange.svg)
-![Axum](https://img.shields.io/badge/Axum-0.7-red.svg)
-![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15+-blue.svg)
-![JWT](https://img.shields.io/badge/JWT-Bearer-ff69b4.svg)
-![License](https://img.shields.io/badge/License-Apache%202.0-green.svg)
+技术栈
+框架: Axum - 基于 Tokio 的高性能 Web 框架
 
-**一个高性能、生产就绪的用户认证系统，5天从零到部署上线**
+数据库: PostgreSQL + SQLx - 类型安全的异步数据库操作
 
-[快速开始](#-快速开始) • [API文档](#-api文档) • [部署指南](#-部署指南) • [技术架构](#-技术架构)
+认证: JWT (JSON Web Token) - 基于 jsonwebtoken 实现
 
-</div>
+邮件服务: Lettre - 支持 SMTP 的邮件发送
 
----
+序列化: Serde - 高性能的序列化/反序列化框架
 
-## ✨ 特性
+时间处理: Chrono - 日期时间处理库
 
-- 🚀 **高性能** - 基于 Rust + Axum 框架，单机可处理数万并发
-- 🔐 **安全认证** - JWT 令牌认证，24小时自动过期
-- 📧 **邮箱验证** - 集成 QQ 邮箱 SMTP，5分钟有效验证码
-- 💾 **数据持久化** - PostgreSQL 数据库，连接池管理
-- 📦 **开箱即用** - 完整的注册/登录/验证码流程
-- 🐳 **轻松部署** - 支持 Docker、Systemd、Nginx 反向代理
+功能特性
+✅ 用户注册与登录
 
-## 🛠️ 技术栈
+✅ JWT 身份认证
 
-| 技术 | 用途 | 版本 |
-|------|------|------|
-| **Rust** | 主编程语言 | 1.70+ |
-| **Axum** | Web 框架 | 0.7 |
-| **SQLx** | 异步数据库驱动 | 0.7 |
-| **PostgreSQL** | 关系型数据库 | 15+ |
-| **JSON Web Token** | 用户认证 | 10.3 |
-| **Lettre** | 邮件发送 | 0.11 |
-| **Tokio** | 异步运行时 | 1.0 |
+✅ 邮箱验证码发送（SMTP）
 
-## 📋 前置要求
+✅ 论坛帖子 CRUD 操作
 
-- Rust 1.70+
-- PostgreSQL 15+
-- QQ 邮箱账号（用于 SMTP 发送验证码）
+✅ 帖子分类与标签系统
 
-## 🚀 快速开始
+✅ 浏览量统计
 
-### 1. 克隆项目
+✅ Bootstrap 数据预加载
 
-```bash
-git clone https://github.com/yourusername/devbit-auth.git
-cd devbit-auth
-```
+✅ 类型安全的数据库查询
 
-### 2. 配置环境变量
+快速开始
+环境要求
+Rust 1.70+
 
-创建 `.env` 文件：
+PostgreSQL 14+
 
-```bash
-cp .env.example .env
-```
+SMTP 邮件服务（QQ邮箱或其他）
 
-编辑 `.env`：
+安装步骤
+克隆项目
 
-```env
-# 数据库配置
-DATABASE_URL=postgresql://username:password@localhost:5432/devbit
+bash
+git clone https://github.com/EpsilonHunter/devbit-forum-api.git
+cd devbit-forum-api
+配置环境变量
 
-# JWT 密钥（请使用强密码）
-JWT_SECRET=your_super_strong_secret_key_here
+创建 .env 文件：
 
-# SMTP 配置（QQ邮箱示例）
-SMTP_HOST=smtp.qq.com
-SMTP_PORT=465
+env
+DATABASE_URL=postgres://username:password@localhost/devbit_forum
+JWT_SECRET=your_jwt_secret_key_here
 SMTP_USERNAME=your_email@qq.com
 SMTP_PASSWORD=your_smtp_authorization_code
-```
+SMTP_SERVER=smtp.qq.com
+初始化数据库
 
-### 3. 初始化数据库
-
-```bash
-# 创建数据库
-createdb devbit
-
-# 运行迁移脚本
-psql -d devbit -f schema.sql
-```
-
-数据库表结构：
-
-```sql
+sql
 -- 用户表
 CREATE TABLE users (
-    id SERIAL PRIMARY KEY,
-    name VARCHAR(100) NOT NULL,
-    email VARCHAR(255) UNIQUE NOT NULL,
-    password VARCHAR(255) NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+id SERIAL PRIMARY KEY,
+name VARCHAR(100) NOT NULL,
+email VARCHAR(255) UNIQUE NOT NULL,
+password VARCHAR(255) NOT NULL,
+avatar VARCHAR(500) DEFAULT '',
+is_admin BOOLEAN DEFAULT FALSE,
+created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 -- 验证码表
 CREATE TABLE verify_code (
-    id SERIAL PRIMARY KEY,
-    email VARCHAR(255) NOT NULL,
-    code VARCHAR(6) NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    expires_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP + INTERVAL '5 minutes'
+email VARCHAR(255) PRIMARY KEY,
+code VARCHAR(6) NOT NULL,
+created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
-```
 
-### 4. 运行项目
+-- 帖子表
+CREATE TABLE posts (
+id SERIAL PRIMARY KEY,
+title VARCHAR(200) NOT NULL,
+content TEXT NOT NULL,
+author_id INTEGER REFERENCES users(id),
+category TEXT NOT NULL DEFAULT 'general',
+tags TEXT[] DEFAULT '{}',
+created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+view_count INTEGER DEFAULT 0,
+comment_count INTEGER DEFAULT 0,
+like_count INTEGER DEFAULT 0,
+is_pinned BOOLEAN DEFAULT FALSE,
+is_locked BOOLEAN DEFAULT FALSE
+);
+编译运行
 
-```bash
-# 开发模式
-cargo run
-
-# 生产模式
+bash
 cargo build --release
-./target/release/devbit-auth
-```
+cargo run --release
+服务默认运行在 http://127.0.0.1:7878
 
-服务器将在 `http://127.0.0.1:7878` 启动
-
-## 📡 API 文档
-
-### 1. 发送验证码
-
-```http
+API 文档
+认证相关
+发送验证码
+http
 POST /register/send_code
 Content-Type: application/json
 
 {
-    "email": "user@example.com"
+"email": "user@example.com"
 }
-```
-
-**响应：**
-```json
-
-```
-
-### 2. 用户注册
-
-```http
+用户注册
+http
 POST /register
 Content-Type: application/json
 
 {
-    "name": "张三",
-    "email": "user@example.com",
-    "code": "123456",
-    "password": "secure_password"
+"name": "username",
+"email": "user@example.com",
+"code": "123456",
+"password": "password123"
 }
-```
-
-**响应：**
-```json
-{
-    "id": 1,
-    "name": "张三",
-    "email": "user@example.com"
-}
-```
-
-### 3. 用户登录
-
-```http
+用户登录
+http
 POST /login
 Content-Type: application/json
 
 {
-    "email": "user@example.com",
-    "password": "secure_password"
+"email": "user@example.com",
+"password": "password123"
 }
-```
+响应：
 
-**响应：**
-```json
+json
 {
-    "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-    "user": {
-        "id": 1,
-        "name": "张三",
-        "email": "user@example.com"
-    }
+"token": "eyJhbGciOiJIUzI1NiIs...",
+"user": {
+"id": 1,
+"name": "username",
+"email": "user@example.com"
 }
-```
+}
+论坛相关
+Bootstrap 数据加载
+http
+GET /forum/bootstrap
+获取帖子详情
+http
+GET /forum/posts/{id}
+创建帖子
+http
+POST /forum/posts
+Authorization: Bearer {token}
+Content-Type: application/json
 
-## 🏗️ 项目结构
+{
+"title": "Post Title",
+"content": "Post content...",
+"category": "tech",
+"tags": ["rust", "axum"]
+}
+帖子分类
+支持的分类类型：
 
-```
+general - 综合讨论
+
+tech - 技术交流
+
+devbit - DevBit 专区
+
+help - 求助问答
+
+showcase - 作品展示
+
+announcement - 公告通知
+
+项目结构
+text
 src/
-├── main.rs           # 应用入口，路由配置
-├── database.rs       # 数据库连接和初始化
-└── handlers/         # 业务逻辑（可选）
-    ├── auth.rs       # 认证处理
-    ├── email.rs      # 邮件服务
-    └── models.rs     # 数据模型
-```
+├── main.rs          # 主入口、路由配置、请求处理
+└── database.rs      # 数据库连接池初始化
+安全特性
+JWT 令牌有效期 24 小时
 
-## 🔒 安全特性
+密码验证码机制（5分钟有效期）
 
-- ✅ **密码加密** - 使用 bcrypt 哈希存储（建议添加）
-- ✅ **JWT 令牌** - 24小时自动过期
-- ✅ **验证码限时** - 5分钟有效期
-- ✅ **SQL 注入防护** - SQLx 参数化查询
-- ✅ **环境变量隔离** - 敏感信息不硬编码
+Bearer Token 认证
 
-## 🚢 部署指南
+邮箱唯一性验证
 
-### Docker 部署
+输入参数类型安全校验
 
-```dockerfile
-# Dockerfile
-FROM rust:1.70-slim as builder
-WORKDIR /app
-COPY . .
-RUN cargo build --release
+开发团队
+后端开发: EpsilonHunter
 
-FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y libssl3 ca-certificates
-COPY --from=builder /app/target/release/devbit-auth /usr/local/bin/
-EXPOSE 7878
-CMD ["devbit-auth"]
-```
+前端开发: Clearders
 
-```bash
-# 构建镜像
-docker build -t devbit-auth .
+许可证
+本项目采用 Apache License 2.0 开源协议。
 
-# 运行容器
-docker run -d \
-  -p 7878:7878 \
-  --env-file .env \
-  --name devbit-auth \
-  devbit-auth
-```
+text
+Copyright 2024 EpsilonHunter
 
-### Nginx 反向代理配置
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
 
-```nginx
-server {
-    listen 80;
-    server_name api.yourdomain.com;
+    http://www.apache.org/licenses/LICENSE-2.0
 
-    location / {
-        proxy_pass http://127.0.0.1:7878;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-}
-```
-
-### Systemd 服务
-
-```ini
-# /etc/systemd/system/devbit-auth.service
-[Unit]
-Description=DevBit Auth Service
-After=network.target postgresql.service
-
-[Service]
-Type=simple
-User=www-data
-WorkingDirectory=/opt/devbit-auth
-EnvironmentFile=/opt/devbit-auth/.env
-ExecStart=/opt/devbit-auth/target/release/devbit-auth
-Restart=always
-
-[Install]
-WantedBy=multi-user.target
-```
-
-```bash
-sudo systemctl enable devbit-auth
-sudo systemctl start devbit-auth
-```
-
-## 📊 性能测试
-
-```bash
-# 使用 wrk 进行压力测试
-wrk -t12 -c400 -d30s http://localhost:7878/login
-```
-
-预期性能（单机）：
-- **QPS**: 10,000+
-- **延迟**: P99 < 50ms
-- **并发**: 支持 10,000+ 并发连接
-
-## 🔧 环境变量说明
-
-| 变量名 | 说明 | 示例 | 必需 |
-|--------|------|------|------|
-| `DATABASE_URL` | PostgreSQL 连接字符串 | `postgresql://user:pass@localhost:5432/db` | ✅ |
-| `JWT_SECRET` | JWT 签名密钥 | `your-secret-key-min-32-chars` | ✅ |
-| `SMTP_HOST` | 邮件服务器地址 | `smtp.qq.com` | ✅ |
-| `SMTP_PORT` | 邮件服务器端口 | `465` | ✅ |
-| `SMTP_USERNAME` | 邮箱账号 | `your@qq.com` | ✅ |
-| `SMTP_PASSWORD` | SMTP 授权码 | `xxxxx` | ✅ |
-
-## 🐛 常见问题
-
-### Q: 验证码收不到？
-A: 检查 SMTP 配置，QQ邮箱需要使用授权码而非登录密码
-
-### Q: JWT_SECRET 应该多长？
-A: 建议 32 位以上随机字符串，可用 `openssl rand -base64 32` 生成
-
-### Q: 如何重置数据库？
-A: `sqlx database drop -y && sqlx database create && sqlx migrate run`
-
-### Q: 生产环境如何管理环境变量？
-A: 使用 Systemd EnvironmentFile 或 Docker --env-file
-
-## 🗺️ 路线图
-
-- [ ] 添加 Refresh Token 机制
-- [ ] 集成 OAuth2.0（GitHub/Google 登录）
-- [ ] 添加 Redis 会话存储
-- [ ] 实现限流和防暴力破解
-- [ ] 添加审计日志
-- [ ] 支持多语言邮件模板
-
-## 🤝 贡献
-
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+贡献指南
 欢迎提交 Issue 和 Pull Request！
 
-## 📄 许可证
+Fork 本仓库
 
-MIT License © 2024 DevBit
+创建特性分支 (git checkout -b feature/AmazingFeature)
 
-## 📧 联系方式
+提交更改 (git commit -m 'Add some AmazingFeature')
 
-- 作者: [Your Name]
-- 邮箱: your@email.com
-- 项目地址: [GitHub Repository]
+推送到分支 (git push origin feature/AmazingFeature)
 
----
+创建 Pull Request
 
-<div align="center">
-  <sub>Built with ❤️ by DevBit Team</sub>
-</div>
-```
+联系方式
+Issues: GitHub Issues
 
-这个 README 包含了：
-- ✅ 项目徽章和简介
-- ✅ 完整的技术栈说明
-- ✅ 快速开始指南
-- ✅ 详细的 API 文档
-- ✅ 安全特性说明
-- ✅ 多种部署方式
-- ✅ 常见问题解答
-- ✅ 路线图和贡献指南
+邮箱: 2043399410@qq.com
 
-根据你的实际项目情况调整相关内容（如作者、仓库地址等）！
+<div align="center"> Made with ❤️ by DevBit Team </div>
