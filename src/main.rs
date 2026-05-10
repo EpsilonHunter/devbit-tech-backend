@@ -419,7 +419,51 @@ async fn get_post(
         is_locked: row.is_locked,
     }))
 }
+async fn delete_post(
+    pool: State<Pool<Postgres>>,
+    headers: HeaderMap,
+    id: Path<i32>,
+) -> Result<StatusCode, StatusCode> {
+    // 1. 从请求头获取并解码token
+    let token = headers
+        .get(AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .ok_or(StatusCode::UNAUTHORIZED)?;
 
+    let user_id = decode_token(token)?;
+
+    // 2. 查询帖子信息（获取作者ID）
+    let post = sqlx::query("SELECT author_id FROM posts WHERE id = $1")
+        .bind(*id)
+        .fetch_optional(&*pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    let author_id: i32 = post.get(0);
+
+    // 3. 查询当前用户是否是管理员
+    let is_admin: bool = sqlx::query_scalar("SELECT is_admin FROM users WHERE id = $1")
+        .bind(user_id)
+        .fetch_one(&*pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    // 4. 权限检查：是管理员或者是帖子作者
+    if !is_admin && user_id != author_id {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    // 5. 执行删除
+    sqlx::query("DELETE FROM posts WHERE id = $1")
+        .bind(*id)
+        .execute(&*pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(StatusCode::NO_CONTENT) // 204 删除成功
+}
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenv().ok();
