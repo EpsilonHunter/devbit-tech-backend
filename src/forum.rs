@@ -166,7 +166,7 @@ fn token_from_headers(headers: &HeaderMap) -> Option<String> {
 }
 
 fn user_id_from_token(token: &str) -> Option<i32> {
-    let secret = env::var("JWT_SECRET").ok()?;
+    let secret = env::var("JWT_SECRET").unwrap_or_else(|_| "devbit-local-secret".to_string());
     let data = decode::<Claims>(
         token,
         &DecodingKey::from_secret(secret.as_bytes()),
@@ -193,6 +193,69 @@ async fn get_current_user(pool: &Pool<Postgres>, user_id: i32) -> Result<ForumUs
 
     row.map(|r| forum_user(r.get("id"), r.get("name")))
         .ok_or(StatusCode::UNAUTHORIZED)
+}
+
+async fn require_current_user(
+    pool: &Pool<Postgres>,
+    headers: &HeaderMap,
+) -> Result<ForumUser, StatusCode> {
+    let user_id = require_user_id(headers)?;
+    get_current_user(pool, user_id).await
+}
+
+fn require_admin(user: &ForumUser) -> Result<(), StatusCode> {
+    if user.is_admin {
+        Ok(())
+    } else {
+        Err(StatusCode::FORBIDDEN)
+    }
+}
+
+async fn require_post_moderator(
+    pool: &Pool<Postgres>,
+    post_id: i32,
+    user: &ForumUser,
+) -> Result<(), StatusCode> {
+    if user.is_admin {
+        return Ok(());
+    }
+
+    let author_id = sqlx::query_scalar::<_, i32>("SELECT author_id FROM forum_posts WHERE id = $1")
+        .bind(post_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    if author_id == user.id {
+        Ok(())
+    } else {
+        Err(StatusCode::FORBIDDEN)
+    }
+}
+
+async fn require_comment_moderator(
+    pool: &Pool<Postgres>,
+    comment_id: i32,
+    user: &ForumUser,
+) -> Result<(), StatusCode> {
+    if user.is_admin {
+        return Ok(());
+    }
+
+    let author_id =
+        sqlx::query_scalar::<_, i32>("SELECT author_id FROM forum_comments WHERE id = $1")
+            .bind(comment_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+            .ok_or(StatusCode::NOT_FOUND)?;
+
+    if author_id == user.id {
+        Ok(())
+    } else {
+        Err(StatusCode::FORBIDDEN)
+    }
 }
 
 fn row_to_post(row: &PgRow) -> ForumPost {
@@ -380,10 +443,11 @@ async fn get_post(
     Path(id): Path<i32>,
     headers: HeaderMap,
 ) -> Result<Json<ForumPost>, StatusCode> {
-    let _ = sqlx::query("UPDATE forum_posts SET view_count = view_count + 1 WHERE id = $1")
+    sqlx::query("UPDATE forum_posts SET view_count = view_count + 1 WHERE id = $1")
         .bind(id)
         .execute(&pool)
-        .await;
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     Ok(Json(
         fetch_post_by_id(&pool, id, optional_user_id(&headers)).await?,
@@ -392,10 +456,10 @@ async fn get_post(
 
 async fn create_post(
     State(pool): State<Pool<Postgres>>,
+    headers: HeaderMap,
     Json(payload): Json<CreatePostRequest>,
 ) -> Result<Json<ForumPost>, StatusCode> {
-    let user_id: i32 = 1;
-    let user = get_current_user(&pool, user_id).await?;
+    let user = require_current_user(&pool, &headers).await?;
     let category = payload.category.unwrap_or_else(|| "general".to_string());
     let tags = payload.tags.unwrap_or_default();
 
@@ -406,7 +470,7 @@ async fn create_post(
     )
     .bind(&payload.title)
     .bind(&payload.content)
-    .bind(user_id)
+    .bind(user.id)
     .bind(&category)
     .bind(&tags)
     .fetch_one(&pool)
@@ -437,7 +501,11 @@ async fn create_post(
 async fn delete_post(
     State(pool): State<Pool<Postgres>>,
     Path(id): Path<i32>,
+    headers: HeaderMap,
 ) -> Result<StatusCode, StatusCode> {
+    let user = require_current_user(&pool, &headers).await?;
+    require_post_moderator(&pool, id, &user).await?;
+
     let result = sqlx::query("DELETE FROM forum_posts WHERE id = $1")
         .bind(id)
         .execute(&pool)
@@ -454,7 +522,11 @@ async fn delete_post(
 async fn toggle_pin(
     State(pool): State<Pool<Postgres>>,
     Path(id): Path<i32>,
+    headers: HeaderMap,
 ) -> Result<Json<ForumPost>, StatusCode> {
+    let user = require_current_user(&pool, &headers).await?;
+    require_admin(&user)?;
+
     let result = sqlx::query("UPDATE forum_posts SET is_pinned = NOT is_pinned WHERE id = $1")
         .bind(id)
         .execute(&pool)
@@ -471,7 +543,11 @@ async fn toggle_pin(
 async fn toggle_lock(
     State(pool): State<Pool<Postgres>>,
     Path(id): Path<i32>,
+    headers: HeaderMap,
 ) -> Result<Json<ForumPost>, StatusCode> {
+    let user = require_current_user(&pool, &headers).await?;
+    require_admin(&user)?;
+
     let result = sqlx::query("UPDATE forum_posts SET is_locked = NOT is_locked WHERE id = $1")
         .bind(id)
         .execute(&pool)
@@ -541,7 +617,7 @@ async fn toggle_like(
 async fn list_comments(
     State(pool): State<Pool<Postgres>>,
     Path(post_id): Path<i32>,
-) -> Json<Vec<ForumComment>> {
+) -> Result<Json<Vec<ForumComment>>, StatusCode> {
     let rows = sqlx::query(
         "SELECT c.*, u.name as author_name
          FROM forum_comments c
@@ -552,7 +628,7 @@ async fn list_comments(
     .bind(post_id)
     .fetch_all(&pool)
     .await
-    .unwrap_or_default();
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let comments: Vec<ForumComment> = rows
         .iter()
@@ -568,16 +644,16 @@ async fn list_comments(
         })
         .collect();
 
-    Json(comments)
+    Ok(Json(comments))
 }
 
 async fn create_comment(
     State(pool): State<Pool<Postgres>>,
     Path(post_id): Path<i32>,
+    headers: HeaderMap,
     Json(payload): Json<CreateCommentRequest>,
 ) -> Result<Json<ForumComment>, StatusCode> {
-    let user_id: i32 = 1;
-    let user = get_current_user(&pool, user_id).await?;
+    let user = require_current_user(&pool, &headers).await?;
 
     let post = sqlx::query("SELECT is_locked FROM forum_posts WHERE id = $1")
         .bind(post_id)
@@ -600,7 +676,7 @@ async fn create_comment(
          RETURNING id, created_at",
     )
     .bind(post_id)
-    .bind(user_id)
+    .bind(user.id)
     .bind(&payload.content)
     .fetch_one(&pool)
     .await
@@ -620,7 +696,11 @@ async fn create_comment(
 async fn delete_comment(
     State(pool): State<Pool<Postgres>>,
     Path(id): Path<i32>,
+    headers: HeaderMap,
 ) -> Result<StatusCode, StatusCode> {
+    let user = require_current_user(&pool, &headers).await?;
+    require_comment_moderator(&pool, id, &user).await?;
+
     let result = sqlx::query("DELETE FROM forum_comments WHERE id = $1")
         .bind(id)
         .execute(&pool)
@@ -634,21 +714,20 @@ async fn delete_comment(
     }
 }
 
-async fn list_messages(State(pool): State<Pool<Postgres>>) -> Json<Vec<ForumMessage>> {
-    let user_id: i32 = 1;
-    Json(
-        fetch_messages_for_user(&pool, user_id)
-            .await
-            .unwrap_or_default(),
-    )
+async fn list_messages(
+    State(pool): State<Pool<Postgres>>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<ForumMessage>>, StatusCode> {
+    let user = require_current_user(&pool, &headers).await?;
+    Ok(Json(fetch_messages_for_user(&pool, user.id).await?))
 }
 
 async fn send_message(
     State(pool): State<Pool<Postgres>>,
+    headers: HeaderMap,
     Json(payload): Json<SendMessageRequest>,
 ) -> Result<Json<ForumMessage>, StatusCode> {
-    let user_id: i32 = 1;
-    let sender = get_current_user(&pool, user_id).await?;
+    let sender = require_current_user(&pool, &headers).await?;
     let recipient = get_current_user(&pool, payload.recipient_id).await?;
 
     let row = sqlx::query(
@@ -656,7 +735,7 @@ async fn send_message(
          VALUES ($1, $2, $3)
          RETURNING id, created_at",
     )
-    .bind(user_id)
+    .bind(sender.id)
     .bind(payload.recipient_id)
     .bind(&payload.content)
     .fetch_one(&pool)
@@ -675,30 +754,50 @@ async fn send_message(
     }))
 }
 
-async fn mark_message_read(State(pool): State<Pool<Postgres>>, Path(id): Path<i32>) -> StatusCode {
-    let _ = sqlx::query("UPDATE forum_messages SET is_read = true WHERE id = $1")
-        .bind(id)
-        .execute(&pool)
-        .await;
+async fn mark_message_read(
+    State(pool): State<Pool<Postgres>>,
+    Path(id): Path<i32>,
+    headers: HeaderMap,
+) -> Result<StatusCode, StatusCode> {
+    let user = require_current_user(&pool, &headers).await?;
+    let result = sqlx::query(
+        "UPDATE forum_messages SET is_read = true
+         WHERE id = $1 AND recipient_id = $2",
+    )
+    .bind(id)
+    .bind(user.id)
+    .execute(&pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    StatusCode::NO_CONTENT
+    if result.rows_affected() == 0 {
+        Err(StatusCode::NOT_FOUND)
+    } else {
+        Ok(StatusCode::NO_CONTENT)
+    }
 }
 
 async fn mark_conversation_read(
     State(pool): State<Pool<Postgres>>,
     Path(partner_id): Path<i32>,
-) -> StatusCode {
-    let user_id: i32 = 1;
-    let _ = sqlx::query(
+    headers: HeaderMap,
+) -> Result<StatusCode, StatusCode> {
+    let user = require_current_user(&pool, &headers).await?;
+    let result = sqlx::query(
         "UPDATE forum_messages SET is_read = true
          WHERE sender_id = $1 AND recipient_id = $2 AND is_read = false",
     )
     .bind(partner_id)
-    .bind(user_id)
+    .bind(user.id)
     .execute(&pool)
-    .await;
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    StatusCode::NO_CONTENT
+    if result.rows_affected() == 0 {
+        Err(StatusCode::NOT_FOUND)
+    } else {
+        Ok(StatusCode::NO_CONTENT)
+    }
 }
 
 async fn search_posts(

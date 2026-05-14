@@ -1,13 +1,22 @@
-use sqlx::{Pool, Postgres};
+use sqlx::{Pool, Postgres, postgres::PgPoolOptions};
+use std::env;
+use std::time::Duration;
+use tokio::time::timeout;
+
 pub async fn db_init() -> Result<Pool<Postgres>, sqlx::Error> {
-    let pool = Pool::<Postgres>::connect("postgres://postgres:@localhost:5432/postgres").await?;
-    println!("Hello, world!");
-    match sqlx::query("CREATE DATABASE users").execute(&pool).await {
-        Ok(_) => println!("数据库users创建成功."),
-        Err(_) => println!("数据库users已存在."),
-    }
-    let pool = Pool::<Postgres>::connect("postgres://postgres:@localhost:5432/users").await?;
-    match sqlx::query(
+    let database_url = env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://postgres:@localhost:5432/users".to_string());
+    let pool = timeout(
+        Duration::from_secs(5),
+        PgPoolOptions::new()
+            .max_connections(5)
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&database_url),
+    )
+    .await
+    .map_err(|_| sqlx::Error::PoolTimedOut)??;
+
+    sqlx::query(
         "CREATE TABLE IF NOT EXISTS users (
             id SERIAL PRIMARY KEY,
             name TEXT NOT NULL,
@@ -16,23 +25,39 @@ pub async fn db_init() -> Result<Pool<Postgres>, sqlx::Error> {
         )",
     )
     .execute(&pool)
-    .await
-    {
-        Ok(_) => println!("表users创建成功."),
-        Err(e) => println!("表users: {}", e),
-    }
-    match sqlx::query(
-        "CREATE TABLE IF NOT EXISTS verify_code (email TEXT NOT NULL, code VARCHAR(6) NOT NULL)",
+    .await?;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS verify_code (
+            email TEXT NOT NULL,
+            code VARCHAR(6) NOT NULL,
+            expires_at TIMESTAMPTZ NOT NULL DEFAULT NOW() + INTERVAL '5 minutes'
+        )",
     )
     .execute(&pool)
-    .await
-    {
-        Ok(_) => println!("表verify_code创建成功."),
-        Err(e) => println!("表verify_code: {}", e),
-    }
+    .await?;
+    sqlx::query(
+        "ALTER TABLE verify_code
+         ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ NOT NULL DEFAULT NOW() + INTERVAL '5 minutes'",
+    )
+    .execute(&pool)
+    .await?;
+    sqlx::query(
+        "DELETE FROM verify_code a
+         USING verify_code b
+         WHERE LOWER(a.email) = LOWER(b.email)
+           AND a.ctid < b.ctid",
+    )
+    .execute(&pool)
+    .await?;
+    sqlx::query(
+        "CREATE UNIQUE INDEX IF NOT EXISTS verify_code_email_lower_idx
+         ON verify_code (LOWER(email))",
+    )
+    .execute(&pool)
+    .await?;
 
-    // Forum tables
-    match sqlx::query(
+    sqlx::query(
         "CREATE TABLE IF NOT EXISTS forum_posts (
             id SERIAL PRIMARY KEY,
             title TEXT NOT NULL,
@@ -48,13 +73,9 @@ pub async fn db_init() -> Result<Pool<Postgres>, sqlx::Error> {
         )",
     )
     .execute(&pool)
-    .await
-    {
-        Ok(_) => println!("表forum_posts创建成功."),
-        Err(e) => println!("表forum_posts: {}", e),
-    }
+    .await?;
 
-    match sqlx::query(
+    sqlx::query(
         "CREATE TABLE IF NOT EXISTS forum_comments (
             id SERIAL PRIMARY KEY,
             post_id INT NOT NULL REFERENCES forum_posts(id) ON DELETE CASCADE,
@@ -64,13 +85,9 @@ pub async fn db_init() -> Result<Pool<Postgres>, sqlx::Error> {
         )",
     )
     .execute(&pool)
-    .await
-    {
-        Ok(_) => println!("表forum_comments创建成功."),
-        Err(e) => println!("表forum_comments: {}", e),
-    }
+    .await?;
 
-    match sqlx::query(
+    sqlx::query(
         "CREATE TABLE IF NOT EXISTS forum_messages (
             id SERIAL PRIMARY KEY,
             sender_id INT NOT NULL REFERENCES users(id),
@@ -81,13 +98,9 @@ pub async fn db_init() -> Result<Pool<Postgres>, sqlx::Error> {
         )",
     )
     .execute(&pool)
-    .await
-    {
-        Ok(_) => println!("表forum_messages创建成功."),
-        Err(e) => println!("表forum_messages: {}", e),
-    }
+    .await?;
 
-    match sqlx::query(
+    sqlx::query(
         "CREATE TABLE IF NOT EXISTS forum_post_likes (
             post_id INT NOT NULL REFERENCES forum_posts(id) ON DELETE CASCADE,
             user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -96,11 +109,7 @@ pub async fn db_init() -> Result<Pool<Postgres>, sqlx::Error> {
         )",
     )
     .execute(&pool)
-    .await
-    {
-        Ok(_) => println!("表forum_post_likes创建成功."),
-        Err(e) => println!("表forum_post_likes: {}", e),
-    }
+    .await?;
 
     Ok(pool)
 }
