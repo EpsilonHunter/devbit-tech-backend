@@ -13,6 +13,7 @@ use lettre::{Message, SmtpTransport, Transport};
 use std::env;
 use dotenv::dotenv;
 mod database;
+use devbit::forum;
 #[derive(Serialize)]
 struct User {
     id:i32,
@@ -134,6 +135,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/register", post(create_user))
         .route("/register/send_code",post(send_verification_code))
         .route("/login",post(login_check))
+        .merge(forum::forum_routes())
         .with_state(pool);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:7878").await?;
     axum::serve(listener, app).await?;
