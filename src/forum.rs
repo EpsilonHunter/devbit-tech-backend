@@ -73,6 +73,7 @@ pub struct ForumMessage {
 pub struct ForumBootstrap {
     pub users: Vec<ForumUser>,
     pub posts: Vec<ForumPost>,
+    pub comments: Vec<ForumComment>,
     pub messages: Vec<ForumMessage>,
 }
 
@@ -294,6 +295,18 @@ fn row_to_message(row: &PgRow) -> ForumMessage {
     }
 }
 
+fn row_to_comment(row: &PgRow) -> ForumComment {
+    let author_id: i32 = row.get("author_id");
+
+    ForumComment {
+        id: row.get("id"),
+        post_id: row.get("post_id"),
+        author: forum_user(author_id, row.get("author_name")),
+        content: row.get("content"),
+        created_at: row.get::<DateTime<Utc>, _>("created_at").to_rfc3339(),
+    }
+}
+
 async fn fetch_users(pool: &Pool<Postgres>) -> Result<Vec<ForumUser>, StatusCode> {
     let rows = sqlx::query("SELECT id, name FROM users ORDER BY id ASC")
         .fetch_all(pool)
@@ -304,6 +317,20 @@ async fn fetch_users(pool: &Pool<Postgres>) -> Result<Vec<ForumUser>, StatusCode
         .iter()
         .map(|row| forum_user(row.get("id"), row.get("name")))
         .collect())
+}
+
+async fn fetch_comments(pool: &Pool<Postgres>) -> Result<Vec<ForumComment>, StatusCode> {
+    let rows = sqlx::query(
+        "SELECT c.*, u.name as author_name
+         FROM forum_comments c
+         JOIN users u ON u.id = c.author_id
+         ORDER BY c.created_at ASC",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(rows.iter().map(row_to_comment).collect())
 }
 
 async fn fetch_post_by_id(
@@ -363,6 +390,7 @@ async fn bootstrap(
     let viewer_user_id = optional_user_id(&headers);
     let users = fetch_users(&pool).await?;
     let posts = fetch_posts(&pool, None, viewer_user_id).await?;
+    let comments = fetch_comments(&pool).await?;
     let messages = match viewer_user_id {
         Some(user_id) => fetch_messages_for_user(&pool, user_id).await?,
         None => Vec::new(),
@@ -371,6 +399,7 @@ async fn bootstrap(
     Ok(Json(ForumBootstrap {
         users,
         posts,
+        comments,
         messages,
     }))
 }
@@ -630,21 +659,7 @@ async fn list_comments(
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    let comments: Vec<ForumComment> = rows
-        .iter()
-        .map(|r| {
-            let author_id: i32 = r.get("author_id");
-            ForumComment {
-                id: r.get("id"),
-                post_id: r.get("post_id"),
-                author: forum_user(author_id, r.get("author_name")),
-                content: r.get("content"),
-                created_at: r.get::<DateTime<Utc>, _>("created_at").to_rfc3339(),
-            }
-        })
-        .collect();
-
-    Ok(Json(comments))
+    Ok(Json(rows.iter().map(row_to_comment).collect()))
 }
 
 async fn create_comment(
