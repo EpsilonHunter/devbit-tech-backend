@@ -31,14 +31,14 @@ pub async fn db_init() -> Result<Pool<Postgres>, sqlx::Error> {
         "CREATE TABLE IF NOT EXISTS verify_code (
             email TEXT NOT NULL,
             code VARCHAR(6) NOT NULL,
-            expires_at TIMESTAMPTZ NOT NULL DEFAULT NOW() + INTERVAL '5 minutes'
+            expires_at TIMESTAMPTZ NOT NULL DEFAULT NOW() + INTERVAL '10 minutes'
         )",
     )
     .execute(&pool)
     .await?;
     sqlx::query(
         "ALTER TABLE verify_code
-         ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ NOT NULL DEFAULT NOW() + INTERVAL '5 minutes'",
+         ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ NOT NULL DEFAULT NOW() + INTERVAL '10 minutes'",
     )
     .execute(&pool)
     .await?;

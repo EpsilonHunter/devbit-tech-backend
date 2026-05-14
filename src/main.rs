@@ -1,13 +1,13 @@
 use axum::extract::State;
-use axum::http::{StatusCode, header};
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use axum::routing::post;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{Duration, Utc};
 use dotenv::dotenv;
 use hmac::{Hmac, Mac};
-use jsonwebtoken::{EncodingKey, Header, encode};
+use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use lettre::message::{Mailbox, header::ContentType};
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{Message, SmtpTransport, Transport};
@@ -25,12 +25,15 @@ const AUTH_COOKIE_NAME: &str = "auth_token";
 const PASSWORD_HASH_PREFIX: &str = "pbkdf2-sha256";
 const PASSWORD_HASH_ITERATIONS: u32 = 100_000;
 const PASSWORD_HASH_BYTES: usize = 32;
+const VERIFICATION_CODE_EXPIRES_SECONDS: u32 = 600;
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct User {
     id: i32,
     name: String,
     email: String,
+    is_admin: bool,
 }
 
 #[derive(Deserialize)]
@@ -63,6 +66,20 @@ struct LoginRequest {
 struct LoginResponse {
     token: String,
     user: User,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SendCodeResponse {
+    message: String,
+    expires_in_seconds: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    development_code: Option<String>,
+}
+
+#[derive(Serialize)]
+struct LogoutResponse {
+    success: bool,
 }
 
 async fn create_user(
@@ -163,6 +180,7 @@ async fn login_check(
                 id: user_id,
                 name: user_name,
                 email: user_email,
+                is_admin: is_admin_user(user_id),
             },
         }),
     )
@@ -172,7 +190,7 @@ async fn login_check(
 async fn send_verification_code(
     State(pool): State<Pool<Postgres>>,
     Json(req): Json<SendCodeRequest>,
-) -> Result<StatusCode, StatusCode> {
+) -> Result<Json<SendCodeResponse>, StatusCode> {
     let email = req.email.trim().to_lowercase();
     if email.parse::<Mailbox>().is_err() {
         return Err(StatusCode::BAD_REQUEST);
@@ -186,7 +204,7 @@ async fn send_verification_code(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     sqlx::query(
         "INSERT INTO verify_code (email, code, expires_at)
-         VALUES ($1, $2, NOW() + INTERVAL '5 minutes')",
+         VALUES ($1, $2, NOW() + INTERVAL '10 minutes')",
     )
     .bind(&email)
     .bind(&code)
@@ -194,9 +212,21 @@ async fn send_verification_code(
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
+    let development_code = if should_expose_development_code() {
+        Some(code.clone())
+    } else {
+        None
+    };
+
     let smtp_username = match env::var("SMTP_USERNAME") {
         Ok(value) if !value.trim().is_empty() => value,
-        _ => return Ok(StatusCode::NO_CONTENT),
+        _ => {
+            return Ok(Json(SendCodeResponse {
+                message: "Verification code generated for development.".to_string(),
+                expires_in_seconds: VERIFICATION_CODE_EXPIRES_SECONDS,
+                development_code,
+            }));
+        }
     };
     let smtp_password = env::var("SMTP_PASSWORD").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let smtp_server = env::var("SMTP_SERVER").unwrap_or_else(|_| "smtp.qq.com".to_string());
@@ -219,7 +249,7 @@ async fn send_verification_code(
         .subject("devbit verification code")
         .header(ContentType::TEXT_PLAIN)
         .body(format!(
-            "[devbit] Verification code: {code}. It expires in 5 minutes."
+            "[devbit] Verification code: {code}. It expires in 10 minutes."
         ))
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
@@ -234,7 +264,44 @@ async fn send_verification_code(
         .send(&email_message)
         .map_err(|_| StatusCode::BAD_GATEWAY)?;
 
-    Ok(StatusCode::NO_CONTENT)
+    Ok(Json(SendCodeResponse {
+        message: "Verification code sent. Please check your email.".to_string(),
+        expires_in_seconds: VERIFICATION_CODE_EXPIRES_SECONDS,
+        development_code,
+    }))
+}
+
+async fn current_user(
+    State(pool): State<Pool<Postgres>>,
+    headers: HeaderMap,
+) -> Result<Json<User>, StatusCode> {
+    let user_id = user_id_from_headers(&headers).ok_or(StatusCode::UNAUTHORIZED)?;
+    let row = sqlx::query("SELECT id, name, email FROM users WHERE id = $1")
+        .bind(user_id)
+        .fetch_optional(&pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+
+    let user_id: i32 = row.get("id");
+    Ok(Json(User {
+        id: user_id,
+        name: row.get("name"),
+        email: row.get("email"),
+        is_admin: is_admin_user(user_id),
+    }))
+}
+
+async fn logout() -> Response {
+    let cookie = format!(
+        "{AUTH_COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT"
+    );
+
+    (
+        [(header::SET_COOKIE, cookie)],
+        Json(LogoutResponse { success: true }),
+    )
+        .into_response()
 }
 
 #[tokio::main]
@@ -245,6 +312,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/register", post(create_user))
         .route("/register/send_code", post(send_verification_code))
         .route("/login", post(login_check))
+        .route("/me", get(current_user))
+        .route("/logout", post(logout))
+        .route("/api/register", post(create_user))
+        .route("/api/register/send_code", post(send_verification_code))
+        .route("/api/login", post(login_check))
+        .route("/api/me", get(current_user))
+        .route("/api/logout", post(logout))
         .merge(forum::forum_routes())
         .with_state(pool);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:7878").await?;
@@ -275,6 +349,52 @@ fn generate_token(user_id: i32, email: &str) -> Result<String, jsonwebtoken::err
         &claims,
         &EncodingKey::from_secret(secret.as_bytes()),
     )
+}
+
+fn is_admin_user(user_id: i32) -> bool {
+    user_id == 1 || user_id == 2
+}
+
+fn should_expose_development_code() -> bool {
+    env::var("NODE_ENV")
+        .map(|value| value.trim() != "production")
+        .unwrap_or(true)
+}
+
+fn token_from_headers(headers: &HeaderMap) -> Option<String> {
+    if let Some(token) = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return Some(token.to_string());
+    }
+
+    headers
+        .get(header::COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|cookies| {
+            cookies.split(';').find_map(|cookie| {
+                cookie
+                    .trim()
+                    .strip_prefix(&format!("{AUTH_COOKIE_NAME}="))
+                    .map(str::to_string)
+            })
+        })
+}
+
+fn user_id_from_headers(headers: &HeaderMap) -> Option<i32> {
+    let token = token_from_headers(headers)?;
+    let secret = env::var("JWT_SECRET").unwrap_or_else(|_| "devbit-local-secret".to_string());
+    let data = decode::<Claims>(
+        &token,
+        &DecodingKey::from_secret(secret.as_bytes()),
+        &Validation::default(),
+    )
+    .ok()?;
+    Some(data.claims.sub)
 }
 
 fn hash_password(password: &str) -> String {
