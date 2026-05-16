@@ -71,8 +71,8 @@ cargo run --release
 | `DATABASE_URL`       | **是**   | -                    | PostgreSQL 连接字符串，格式：`postgres://user:password@localhost/dbname` |
 | `JWT_SECRET`         | 否       | `devbit-local-secret` | JWT 签名密钥（生产环境务必设置为复杂随机字符串）   |
 | `SMTP_USERNAME`      | 否       | -                    | 发件邮箱地址（留空则跳过真实邮件发送，仅生成验证码） |
-| `SMTP_PASSWORD`      | 否       | -                    | 发件邮箱密码/授权码                               |
-| `SMTP_SERVER`        | 否       | `smtp.qq.com`        | SMTP 服务器地址                                  |
+| `SMTP_PASSWORD`      | 否       | -                    | 发件邮箱密码/授权码                                |
+| `SMTP_SERVER`        | 否       | `smtp.qq.com`        | SMTP 服务器地址                                |
 | `SMTP_PORT`          | 否       | `465`                | SMTP 端口                                        |
 | `NODE_ENV`           | 否       | `development`        | 若为 `production`，则不在 API 响应中返回开发环境验证码 |
 
@@ -150,5 +150,5 @@ Nginx 将 `/api/` 请求代理到后端 `127.0.0.1:7878`，其余静态资源及
 
 ## 许可证
 
-[Apache License]
+[Apache License](./LICENSE)
 ```
